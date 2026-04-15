@@ -30,7 +30,7 @@ import yaml
 def generate_launch_description():
     ld = LaunchDescription()
     config = os.path.join(
-        get_package_share_directory('f1tenth_gym_ros'),
+        get_package_share_directory('mppi'),
         'config',
         'sim.yaml'
         )
