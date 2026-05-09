@@ -32,11 +32,14 @@ from geometry_msgs.msg import TransformStamped
 from geometry_msgs.msg import Transform
 from geometry_msgs.msg import Quaternion
 from ackermann_msgs.msg import AckermannDriveStamped
+from std_msgs.msg import Bool
 from tf2_ros import TransformBroadcaster
 
 import gym
 import numpy as np
 from transforms3d import euler
+import yaml
+from PIL import Image
 
 class GymBridge(Node):
     def __init__(self):
@@ -100,6 +103,18 @@ class GymBridge(Node):
         ego_odom_topic = self.ego_namespace + '/' + self.get_parameter('ego_odom_topic').value
         self.scan_distance_to_base_link = self.get_parameter('scan_distance_to_base_link').value
         
+        map_path = self.get_parameter('map_path').value
+        with open(map_path + '.yaml', 'r') as f:
+            map_meta = yaml.safe_load(f)
+        map_img = Image.open(map_path + '.' + self.get_parameter('map_img_ext').value.strip('.'))
+        self.map_array = np.array(map_img.convert('L'))  # grayscale
+        self.map_resolution = map_meta['resolution']
+        self.map_origin = map_meta['origin']  # [x, y, theta]
+        self.obstacle_threshold = 128  # below this = occupied
+
+        self.collision_count = 0
+        self.was_colliding = False
+
         if num_agents == 2:
             self.has_opp = True
             self.opp_namespace = self.get_parameter('opp_namespace').value
@@ -174,6 +189,9 @@ class GymBridge(Node):
                 '/cmd_vel',
                 self.teleop_callback,
                 10)
+            
+        self.collision_pub = self.create_publisher(Bool, '/collision', 10)
+        self.collision_count = 0
 
 
     def drive_callback(self, drive_msg):
@@ -284,7 +302,26 @@ class GymBridge(Node):
         self.ego_speed[1] = self.obs['linear_vels_y'][0]
         self.ego_speed[2] = self.obs['ang_vels_z'][0]
 
-        
+        px = int((self.ego_pose[0] - self.map_origin[0]) / self.map_resolution)
+        py = int((self.ego_pose[1] - self.map_origin[1]) / self.map_resolution)
+
+        # Map image y-axis is flipped
+        py = self.map_array.shape[0] - 1 - py
+
+        in_obstacle = False
+        if 0 <= px < self.map_array.shape[1] and 0 <= py < self.map_array.shape[0]:
+            in_obstacle = self.map_array[py, px] < self.obstacle_threshold
+
+        collision_msg = Bool()
+        collision_msg.data = bool(in_obstacle)
+        self.collision_pub.publish(collision_msg)
+
+        if in_obstacle and not self.was_colliding:
+            self.collision_count += 1
+            self.get_logger().warn(f'Collision #{self.collision_count}')
+            self.was_colliding = True
+        elif not in_obstacle:
+            self.was_colliding = False
 
     def _publish_odom(self, ts):
         ego_odom = Odometry()
